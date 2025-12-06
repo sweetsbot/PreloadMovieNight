@@ -6,36 +6,55 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Configuration;
 using Spectre.Console;
+using System.CommandLine;
+using System.Runtime.CompilerServices;
 
 try
 {
+
+    RootCommand rootCommand = new("Precache Remote Source Tool");
+    var optionalArgument = new Argument<string>("configFile")
+    {
+        Description = "Your source configuration. Default precache-settings.ini",
+        DefaultValueFactory = (a) => "precache-settings.ini",
+    };
+    rootCommand.Add(optionalArgument);
+    var parseResult = rootCommand.Parse(args);
+
+
+    var settingsIni = parseResult.GetValue(optionalArgument)!;
     var configuration = new ConfigurationBuilder()
         .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
-        .AddIniFile("settings.ini", optional: false)
+        .AddIniFile(settingsIni, optional: false)
         .Build();
 
-    var downloadServerString = configuration["Application:DownloadServer"] ?? string.Empty;
+    var downloadServerString = GetPath(configuration, "Application:DownloadServer");
     var playlist = configuration["Application:Playlist"] ?? string.Empty;
     if (string.IsNullOrWhiteSpace(playlist))
-        playlist = ".playlist.json";
-    
+    {
+        AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Playlist is not optional in an Configuration .ini!");
+        PromptForClose();
+        return 1;
+    }
+
     var downloadServerUrl = new Uri(downloadServerString);
-    var downloadBuilder = new UriBuilder(downloadServerUrl);
+    var downloadBuilder = new Uri(downloadServerUrl, playlist);
     var precacheDirectory = configuration["Application:DownloadDirectory"] ?? string.Empty;
     var fullPrecacheDirectory = Path.GetFullPath(precacheDirectory);
     if (!Directory.Exists(fullPrecacheDirectory))
     {
         AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Cannot find the '{precacheDirectory}' directory.");
+        PromptForClose();
         return 1;
     }
 
     var httpClient = new HttpClient();
-    downloadBuilder.Path += playlist;
-    var playlistPath = playlist.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? playlist : downloadBuilder.Uri.ToString();
+    var playlistPath = playlist.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? playlist : downloadBuilder.ToString();
     var response = await httpClient.GetAsync(playlistPath);
     if (response.StatusCode != HttpStatusCode.OK)
     {
         AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Unable to find the file at [yellow]{playlistPath}[/]. Unable to continue.");
+        PromptForClose();
         return 1;
     }
 
@@ -44,33 +63,50 @@ try
     var count = 0;
     foreach (var filename in filenames)
     {
-        downloadBuilder = new UriBuilder(downloadServerUrl);
-        downloadBuilder.Path += filename;
-        var fileUri = downloadBuilder.Uri.ToString();
+        downloadBuilder = new Uri(downloadServerUrl, filename);
+
+        var fileUri = downloadBuilder.ToString();
         if (filename.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
             fileUri = filename;
         }
 
         var basename = Path.GetFileName(filename);
+        var filePath = Path.Combine(fullPrecacheDirectory, basename);
         // if (string.IsNullOrEmpty())
         AnsiConsole.MarkupInterpolated($"Downloading '{basename}'.");
         response = await httpClient.GetAsync(fileUri);
         if (response.StatusCode != HttpStatusCode.OK)
         {
             AnsiConsole.MarkupLineInterpolated($" [red]ERROR:[/] Failed to download file.");
-            
+            if (File.Exists(filePath))
+            {
+                AnsiConsole.MarkupLineInterpolated($" [green]Notice:[/] Deleting previous pre-cached file \"{filename}\".");
+                File.Delete(filePath);
+            }
             continue;
         }
 
         await using var stream = response.Content.ReadAsStream();
-        await using var outStream = new FileStream(Path.Combine(fullPrecacheDirectory, basename), FileMode.Create,
+        await using var outStream = new FileStream(filePath, FileMode.Create,
             FileAccess.Write, FileShare.None);
-        await stream.CopyToAsync(outStream);
+        try
+        {
+            await stream.CopyToAsync(outStream);
+        }
+        catch
+        {
+            if (File.Exists(filePath))
+            {
+                AnsiConsole.MarkupLineInterpolated($" [green]Notice:[/] Deleting failed file \"{filename}\".");
+                File.Delete(filePath);
+            }
+        }
+
         AnsiConsole.MarkupLineInterpolated($" [green]Complete.[/]");
         count += 1;
     }
-    
+
     AnsiConsole.MarkupLineInterpolated($"[green]Successfully download {count} of {totalFileNames} into cache.[/]");
     PromptForClose();
     return 0;
@@ -88,6 +124,17 @@ void PromptForClose()
 {
     Console.WriteLine("Press enter to exit.");
     Console.ReadLine();
+}
+string GetPath(IConfiguration config, string location)
+{
+    var f = config[location];
+
+    if (!string.IsNullOrEmpty(f) && !f.EndsWith('/'))
+    {
+        return f + '/';
+    }
+
+    return f ?? "";
 }
 
 [JsonSerializable(typeof(string[]))]
