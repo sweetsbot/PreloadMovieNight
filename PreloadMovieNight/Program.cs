@@ -12,33 +12,44 @@ using System.Runtime.CompilerServices;
 try
 {
 
+    const string serverConfigDefaultFileName = "precache-server-settings.ini";
+    const string localConfigDefaultFileName = "precache-local-settings.ini";
+
     RootCommand rootCommand = new("Precache Remote Source Tool");
     var optionalArgument = new Argument<string>("configFile")
     {
-        Description = "Your source configuration. Default precache-settings.ini",
-        DefaultValueFactory = (a) => "precache-settings.ini",
+        Description = $"Your source configuration. Default {serverConfigDefaultFileName}",
+        DefaultValueFactory = (a) => serverConfigDefaultFileName,
     };
     rootCommand.Add(optionalArgument);
     var parseResult = rootCommand.Parse(args);
 
 
+    var localConfigFilePath = Path.Combine(
+        AppDomain.CurrentDomain.BaseDirectory,
+        localConfigDefaultFileName
+    );
+
+    if (!File.Exists(localConfigFilePath))
+    {
+        AnsiConsole.MarkupLineInterpolated($"[blue]Info:[/] Cannot find {localConfigFilePath}, Generating file. Using Default path \"MovieNight\"");
+        File.WriteAllText(
+            localConfigDefaultFileName,
+            """
+            [Application]
+            DownloadDirectory = .\MovieNight
+            """
+        );
+    }
+
     var settingsIni = parseResult.GetValue(optionalArgument)!;
     var configuration = new ConfigurationBuilder()
         .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
         .AddIniFile(settingsIni, optional: false)
+        .AddIniFile(localConfigFilePath, optional: false)
         .Build();
 
-    var downloadServerString = GetPath(configuration, "Application:DownloadServer");
-    var playlist = configuration["Application:Playlist"] ?? string.Empty;
-    if (string.IsNullOrWhiteSpace(playlist))
-    {
-        AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Playlist is not optional in an Configuration .ini!");
-        PromptForClose();
-        return 1;
-    }
 
-    var downloadServerUrl = new Uri(downloadServerString);
-    var downloadBuilder = new Uri(downloadServerUrl, playlist);
     var precacheDirectory = configuration["Application:DownloadDirectory"] ?? string.Empty;
     var fullPrecacheDirectory = Path.GetFullPath(precacheDirectory);
     if (!Directory.Exists(fullPrecacheDirectory))
@@ -47,6 +58,19 @@ try
         PromptForClose();
         return 1;
     }
+
+    var playlist = configuration["Application:Playlist"] ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(playlist))
+    {
+        AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Playlist is not optional in Server Configuration .ini!");
+        PromptForClose();
+        return 1;
+    }
+
+
+    var downloadServerString = GetPath(configuration, "Application:DownloadServer");
+    var downloadServerUrl = new Uri(downloadServerString);
+    var downloadBuilder = new Uri(downloadServerUrl, playlist);
 
     var httpClient = new HttpClient();
     var playlistPath = playlist.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? playlist : downloadBuilder.ToString();
@@ -115,6 +139,7 @@ catch (Exception ex)
 {
     System.Diagnostics.Debug.WriteLine($"exception of type: '{ex.GetType()}'.");
     AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Failed to precache items. {ex.Message}");
+    AnsiConsole.MarkupLineInterpolated($"[red]{ex.StackTrace}[/]");
     AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Ensure your plugin is installed and running from the Application Installation Directory.");
     PromptForClose();
     return 1;
