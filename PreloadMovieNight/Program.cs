@@ -11,8 +11,7 @@ using System.Runtime.CompilerServices;
 
 try
 {
-
-    const string serverConfigDefaultFileName = "precache-server-settings.ini";
+    const string serverConfigDefaultFileName = "precache-remote-settings.ini";
     const string localConfigDefaultFileName = "precache-local-settings.ini";
 
     RootCommand rootCommand = new("Precache Remote Source Tool");
@@ -32,7 +31,8 @@ try
 
     if (!File.Exists(localConfigFilePath))
     {
-        AnsiConsole.MarkupLineInterpolated($"[blue]Info:[/] Cannot find {localConfigFilePath}, Generating file. Using Default path \"MovieNight\"");
+        AnsiConsole.MarkupLineInterpolated(
+            $"[blue]Info:[/] Cannot find {localConfigFilePath}, Generating file. Using Default path \"MovieNight\"");
         File.WriteAllText(
             localConfigDefaultFileName,
             """
@@ -73,11 +73,14 @@ try
     var downloadBuilder = new Uri(downloadServerUrl, playlist);
 
     var httpClient = new HttpClient();
-    var playlistPath = playlist.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? playlist : downloadBuilder.ToString();
+    var playlistPath = playlist.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+        ? playlist
+        : downloadBuilder.ToString();
     var response = await httpClient.GetAsync(playlistPath);
     if (response.StatusCode != HttpStatusCode.OK)
     {
-        AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Unable to find the file at [yellow]{playlistPath}[/]. Unable to continue.");
+        AnsiConsole.MarkupLineInterpolated(
+            $"[red]ERROR:[/] Unable to find the file at [yellow]{playlistPath}[/]. Unable to continue.");
         PromptForClose();
         return 1;
     }
@@ -105,18 +108,41 @@ try
             AnsiConsole.MarkupLineInterpolated($" [red]ERROR:[/] Failed to download file.");
             if (File.Exists(filePath))
             {
-                AnsiConsole.MarkupLineInterpolated($" [green]Notice:[/] Deleting previous pre-cached file \"{filename}\".");
+                AnsiConsole.MarkupLineInterpolated(
+                    $" [green]Notice:[/] Deleting previous pre-cached file \"{filename}\".");
                 File.Delete(filePath);
             }
+
             continue;
         }
 
+        long totalRead = 0;
+        long size = -1;
+        int blockSize = 8192;
+        long blockNum = 0;
+        if (response.Content.Headers.ContentLength.HasValue)
+            size = (long) response.Content.Headers.ContentLength.Value;
         await using var stream = response.Content.ReadAsStream();
         await using var outStream = new FileStream(filePath, FileMode.Create,
             FileAccess.Write, FileShare.None);
         try
         {
-            await stream.CopyToAsync(outStream);
+            int read = 0;
+            var block = new Memory<byte>(new byte[blockSize]);
+            Console.Write($"\rDownloading '{basename}' ({Math.Round(blockNum * blockSize / (double) size * 100.0, 2)}%)");
+            // await stream.CopyToAsync(outStream);
+            while ((read = await stream.ReadAsync(block)) > 0)
+            {
+                await outStream.WriteAsync(block[..read]);
+                totalRead += read;
+                blockNum += 1;
+                Console.Write($"\rDownloading '{basename}' ({Math.Round(blockNum * blockSize / (double) size * 100.0, 2)}%)");
+            }
+
+            if (size > 0 && totalRead != size)
+                throw new Exception(
+                    $"Downloaded {totalRead} bytes, expected {size} bytes for file {basename}."
+                );
         }
         catch
         {
@@ -127,7 +153,7 @@ try
             }
         }
 
-        AnsiConsole.MarkupLineInterpolated($" [green]Complete.[/]");
+        AnsiConsole.MarkupLineInterpolated($"\rDownloading '{basename}' [green]Complete.[/]");
         count += 1;
     }
 
@@ -140,7 +166,8 @@ catch (Exception ex)
     System.Diagnostics.Debug.WriteLine($"exception of type: '{ex.GetType()}'.");
     AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Failed to precache items. {ex.Message}");
     AnsiConsole.MarkupLineInterpolated($"[red]{ex.StackTrace}[/]");
-    AnsiConsole.MarkupLineInterpolated($"[red]ERROR:[/] Ensure your plugin is installed and running from the Application Installation Directory.");
+    AnsiConsole.MarkupLineInterpolated(
+        $"[red]ERROR:[/] Ensure your plugin is installed and running from the Application Installation Directory.");
     PromptForClose();
     return 1;
 }
@@ -150,6 +177,7 @@ void PromptForClose()
     Console.WriteLine("Press enter to exit.");
     Console.ReadLine();
 }
+
 string GetPath(IConfiguration config, string location)
 {
     var f = config[location];
